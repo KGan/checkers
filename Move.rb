@@ -1,5 +1,5 @@
 class Move
-  @attr_accessor :from, :to
+  attr_accessor :from, :to
   def initialize(from, to)
     @from = from
     @to = to
@@ -25,7 +25,7 @@ class Move
   end
 
   def in_bounds?
-    all? {|pos| pos.all? {|x_y| x_y.between?(0..7)}}
+    all? {|pos| pos.all? {|x_y| x_y.between?(0, 7)}}
   end
 
 
@@ -34,7 +34,7 @@ class Move
   end
 
   def is_jump?
-    Move.sub(@to, @from).any? {|coord| coord > 1}
+    Move.sub(@to, @from).any? {|coord| coord.abs > 1}
   end
 #class methods
   def self.add(from, step)

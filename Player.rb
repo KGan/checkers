@@ -1,4 +1,5 @@
 class Player
+  attr_reader :name, :color
   def initialize(color, **options)
     @name = options[:name]
     @color = color
@@ -17,16 +18,14 @@ class Player
         board.move_cursor(:right)
       when "\e[D" #left
         board.move_cursor(:left)
-      when ' '
+      when 'f'
         highlighted = board.cursor
         move_array << highlighted
         board.highlight(highlighted)
-      when '\r'
-        highlighted = board.cursor
-        if move_array.last != highlighted
-          move_array << highlighted
-          board.highlight(highlighted)
-        end
+      when 'd'
+        board.deselect
+        move_array.pop
+      when ' '
         raise Ready
       when 'h'
         return ['history']
@@ -43,6 +42,7 @@ class Player
       end
       raise NotReady
     rescue InputState => e
+      board.display("#{name} (#{color})'s turn to move")
       if e.is_a?(Ready)
         board.reset_selection
         return move_array

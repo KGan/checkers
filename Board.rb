@@ -6,7 +6,9 @@ class Board
     :left   => [ 0, -1],
     :right  => [ 0,  1]
   }
+
   def initialize
+    @history = History.new
     @pieces_count = {
       :red => 12, :black => 12
     }
@@ -15,18 +17,25 @@ class Board
     @grid = Array.new(8) { Array.new(8) }
     load_game(:new_game => true)
   end
+
 # cursor functions
   def move_cursor(direction)
-    @cursor = Move.add(@cursor, CURSOR_DIRECTIONS[direction])
+    new_pos = Move.add(@cursor, CURSOR_DIRECTIONS[direction])
+    @cursor = new_pos if in_bounds?(new_pos)
   end
 
   def highlight(pos)
     @highlighted << @cursor
   end
 
+  def deselect
+    @highlighted.pop
+  end
+
   def reset_selection
     @highlighted = []
   end
+
 # grid accessors
   def [](pos)
     @grid[pos.first][pos.last] if in_bounds?(pos)
@@ -50,27 +59,40 @@ class Board
     end
   end
 # move validation
-  def valid_move?(move, redisplay = false, must_be_jump = false)
+  # this has become terrible with all the variables being passed around.
+  def valid_move?(move, redisplay = false, must_be_jump = false, color, king)
     return false if move.nil? || (move.any? {|pos| pos.nil?})
     raise OutOfBoard unless in_bounds?(move)
     source, dest = move.from, move.to
-    if source && self[source].moves.include?(dest)
-      raise MustChainOnlyJumps unless self[source].jumps.include?(dest)
+    if source && self[source] && self[source].moves.include?(dest)
+      piece_color = self[source].color
+      king = king || Piece.would_kingify?(piece_color, dest)
+      return true, piece_color, king
+    elsif must_be_jump
+      unless Piece.jumps(color, self, source, king).include?(dest)
+        raise MustChainOnlyJumps
+      end
     else
       raise InvalidMove
     end
-
-    return true
-  rescue CheckersExeption => e
+    king ||= Piece.would_kingify?(piece_color, dest)
+    return true, color, king
+  rescue CheckersException => e
     display(e) if redisplay
     return false
   end
 
-  def valid_move_sequence?(moves, redisplay = false) #only for humans
-    raise OnlyOnePiecePlease if multiple_pieces?(moves)
+  def valid_move_sequence?(moves, redisplay = false, mycolor) #only for humans
+    return nil if moves.empty?
+    raise OnlyOnePiece if multiple_pieces?(moves)
+    start_piece = self[moves[0].from]
+    raise NotYourPiece unless start_piece && start_piece.same_color?(mycolor)
+    color, king = nil
     must_be_jump = false
     moves.each do |move|
-      return false unless valid_move?(move, false, must_be_jump)
+      valid, color, king = valid_move?(move, redisplay, must_be_jump, mycolor, king)
+      return false unless valid
+      return false if (moves.length > 1) && !move.is_jump?
       must_be_jump = true
     end
     true
@@ -83,13 +105,16 @@ class Board
     move_or_pos.all? do |ele|
       if ele.is_a?(Move)
         ele.in_bounds?
+      elsif ele.is_a?(Array)
+        ele.all? {|x| x.between?(0,7) }
       else
-        ele.between?(0..7)
+        ele.between?(0,7)
       end
     end
   end
 
   def multiple_pieces?(moves)
+    return nil if moves.empty?
     moving_piece = self[moves[0].from]
     moves.any? do |move|
       move.any? do |pos|
@@ -102,11 +127,15 @@ class Board
     start_piece = self[move.from]
     start_piece.move_to(move.to)
     self[move.to] = start_piece
+    self[move.from] = nil
+    start_piece.kingify
+    @history.record(move)
     if move.is_jump?
       jumped_piece = self[move.eat_pos]
       if jumped_piece && jumped_piece.is_opponent?(start_piece)
         jumped_piece.move_to(nil)
         @pieces_count[jumped_piece.color] -= 1
+        self[move.eat_pos] = nil
       end
       return true
     end
@@ -127,11 +156,7 @@ class Board
     each_row do |row, r_i|
       print_blankrow(r_i)
       row.each_with_index do |tile, c_i|
-        is_black = ((r_i + c_i) % 2 == 1)
-        back_c = is_black ? :green : :magenta
-        back_c = :blue if @highlighted.include? [r_i, c_i]
-        back_c = :white if @cursor == [r_i, c_i]
-
+        back_c = background_color(r_i, c_i)
         if tile
           tile.display(back_c)
         else
@@ -149,27 +174,33 @@ class Board
     puts "************** Welcome to Checkers *****************"
     puts "----------------------------------------------------"
     puts "Use the arrow keys to select a coordinate. "
-    puts "Hit Space to select start to end position"
-    puts "Hit Enter to finalize move"
+    puts "Hit F to select start to end position"
+    puts "Hit D to deselect latest move"
+    puts "Hit Space to finalize and execute move"
     puts "Enter: 's' to save"
     puts "       'q' to quit"
-    # puts "       'h' to toggle history"
-    # puts "       'r' to reset game"
+    puts "       'h' to toggle history"
+    puts "       'r' to reset game"
     puts "----------------------------------------------------"
   end
 
   def print_blankrow(r)
     (0..7).each do |i|
-      back_c = (i+r) % 2 == 1 ? :green : :magenta
-      back_c = :blue if @highlighted.include?([r,i])
-      back_c = :red if @cursor == [r, i]
+      back_c = background_color(r, i)
       print "     ".colorize(background: back_c)
     end
     print "\n"
   end
 
-  def history_space
+  def background_color(x,y)
+    back_c = (x + y) % 2 == 1 ? :light_blue : :green
+    back_c = :blue if @highlighted.include?([x, y])
+    back_c = :white if @cursor == [x, y]
+    back_c
+  end
 
+  def history_space
+    @history.show_history
   end
 
 # duplication
@@ -190,13 +221,18 @@ class Board
     end
   end
 
-  def init_row(rows, color)
+  def init_rows(rows, color)
     (rows.first..rows.last).each do |row|
       start = row % 2
       (start..7).step(2) do |col|
-        self[row, col] = Piece.new(color, pos: [row, col], board: self)
+        self[[row, col]] = Piece.new(color: color, position: [row, col], board: self)
       end
     end
+  end
+
+  def toggle_history
+    @history.shown = !@history.shown
+    display
   end
 
 end
